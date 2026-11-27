@@ -1,0 +1,81 @@
+name: relay-server
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-relay:
+    name: Relay Server
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cancelar run anterior si está corriendo
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Buscando runs en progreso..."
+          CURRENT_RUN_ID=${{ github.run_id }}
+          RUNS=$(gh run list --repo "$REPO" --workflow "relay-server" --status in_progress --json databaseId -q '.[].databaseId')
+          for RUN_ID in $RUNS; do
+            if [ "$RUN_ID" != "$CURRENT_RUN_ID" ]; then
+              echo "Cancelando run anterior: $RUN_ID"
+              gh run cancel "$RUN_ID" --repo "$REPO" || true
+            fi
+          done
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Compilar relay
+        run: go build -o telegram_relay_vps .
+
+      - name: Ejecutar relay
+        env:
+          PROXY_SHARED_SECRET: ${{ secrets.PROXY_SHARED_SECRET }}
+          RELAY_BASE_URL: ${{ secrets.RELAY_BASE_URL }}
+          ALLOWLIST: ${{ secrets.ALLOWLIST }}
+          ALLOWLIST_DEFAULT: telegram
+          LOG_LEVEL: warn
+          POLL_INTERVAL: "0.03"
+          CHUNK_SIZE: "2097152"
+          WINDOW_SIZE: "64"
+          ACK_EVERY: "16"
+          HTTP_RETRIES: "3"
+          HTTP_TIMEOUT: "30"
+          CONNECT_TIMEOUT: "30"
+          QUEUE_POLL_INTERVAL: "0.1"
+          MAX_SESSIONS: "64"
+          UDP_BATCH_COUNT: "256"
+          UDP_BATCH_DELAY_MS: "0"
+          UDP_BATCH_MAX_BYTES: "524288"
+          UDP_MAX_FLOWS: "1024"
+          UDP_POLL_INTERVAL: "0.02"
+          UDP_UPLOAD_WORKERS: "8"
+          RELAY_DELETE_AFTER_READ: "true"
+
+        run: |
+          timeout 16200 ./telegram_relay_vps || true
+
+      - name: Esperar y relanzar
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Esperando 30 minutos para margen de seguridad..."
+          sleep 1800
+          echo "Lanzando el siguiente run automáticamente..."
+          gh workflow run "relay-server" --repo "$REPO"
