@@ -73,6 +73,18 @@ def read_until(sock, tls, incoming, min_bytes=1, timeout=20.0):
     return buf
 
 
+def dbg(name, store, extra=None):
+    """Escribe un marcador de progreso en el bucket (legible en vivo)."""
+    try:
+        obj = {"step": name, "ts": round(time.time()),
+               "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        if extra:
+            obj.update(extra)
+        store.put("_v2_dbg_step.json", json.dumps(obj, ensure_ascii=False).encode())
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main():
     base = os.environ.get("RELAY_BASE_URL", "https://s3.todus.cu/public")
     secret = os.environ.get("PROXY_SHARED_SECRET", "")
@@ -85,13 +97,15 @@ def main():
 
     store = RelayStore(base, secret, http_timeout=30.0)
     sock = None
+    dbg("inicio", store)
     try:
         # 1) sesión por el túnel hasta api.telegram.org:443
         t0 = time.time()
         sock = RelaySocket(store, chunk_size=131072, window=32, ack_every=8)
         sock.connect("api.telegram.org", 443, timeout=30.0)
         result["connect_ms"] = round((time.time() - t0) * 1000)
-        print(f"[1/3] sesión relay ready ({result['connect_ms']} ms) id={sock.id}")
+        print(f"[1/3] sesión relay ready ({result['connect_ms']} ms) id={sock.id}", flush=True)
+        dbg("connect_ok", store, {"connect_ms": result["connect_ms"]})
 
         # 2) TLS 1.3 por el túnel (MemoryBIO + SSLObject)
         t0 = time.time()
@@ -118,7 +132,8 @@ def main():
             raise RelayError("timeout en handshake TLS")
         result["tls_hs_ms"] = round((time.time() - t0) * 1000)
         proto = tls.version()
-        print(f"[2/3] handshake TLS por el túnel OK ({result['tls_hs_ms']} ms, {proto})")
+        print(f"[2/3] handshake TLS por el túnel OK ({result['tls_hs_ms']} ms, {proto})", flush=True)
+        dbg("tls_ok", store, {"tls_hs_ms": result["tls_hs_ms"], "proto": proto})
 
         # 3) HTTP: GET / y getMe por el túnel
         def tls_send(raw_request):
@@ -152,7 +167,8 @@ def main():
                 if ok_json:
                     uname = (doc.get("result") or {}).get("username", "?")
                     result["getme"] = True
-                    print(f"[3/3] getMe por el túnel OK: bot=@{uname}")
+                    print(f"[3/3] getMe por el túnel OK: bot=@{uname}", flush=True)
+                    dbg("getme_ok", store, {"bot": uname, "http": result["http_status"]})
             except Exception:  # noqa: BLE001
                 ok_json = False
         if not token:
@@ -164,7 +180,8 @@ def main():
         result["total_ms"] = round((time.time() - t_total0) * 1000)
     except Exception as e:  # noqa: BLE001
         result["error"] = f"{type(e).__name__}: {e}"
-        print(f"[FALLO] {result['error']}")
+        print(f"[FALLO] {result['error']}", flush=True)
+        dbg("fallo", store, {"error": result["error"][:200]})
     finally:
         if sock is not None:
             try:
@@ -181,9 +198,10 @@ def main():
         result_obj = dict(result)
         result_obj["ts"] = round(time.time())
         result_obj["iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        store.put("_v2_selftest_result.json", json.dumps(result_obj, ensure_ascii=False).encode())
+        escrito = store.put("_v2_selftest_result.json", json.dumps(result_obj, ensure_ascii=False).encode())
+        print(f"RESULTADO_GUARDADO={escrito}", flush=True)
     except Exception as e:  # noqa: BLE001
-        print(f"(escribir resultado al bucket falló: {e})")
+        print(f"(escribir resultado al bucket falló: {e})", flush=True)
 
     if result["ok"]:
         msg = (f"Telegram Relay — SELFTEST E2E OK desde el runner: sesion relay {result['connect_ms']} ms, "

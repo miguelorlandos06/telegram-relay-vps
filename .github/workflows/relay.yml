@@ -55,6 +55,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Dependencias Python (cryptography)
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check cryptography
+          python3 -c "import cryptography; print('cryptography', cryptography.__version__)"
+
       - name: Compilar relay
         run: go build -o telegram_relay_vps .
 
@@ -83,7 +88,6 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_GROUP_ID: ${{ secrets.TG_GROUP_ID }}
         run: |
-          python3 -m pip install --quiet cryptography
           timeout 16200 ./telegram_relay_vps &
           RELAY_PID=$!
           sleep 10
