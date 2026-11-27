@@ -56,7 +56,13 @@ def read_until(sock, tls, incoming, min_bytes=1, timeout=20.0):
             pass
         except ssl.SSLZeroReturnError:
             return buf
-        raw = sock.recv(65536, timeout=5.0)
+        try:
+            raw = sock.recv(65536, timeout=5.0)
+        except TimeoutError:
+            # sin datos tras 5s: si ya hay respuesta suficiente, darla por buena
+            if len(buf) >= min_bytes or b"\r\n\r\n" in buf:
+                return buf
+            continue
         if raw:
             incoming.write(raw)
         elif sock.remote_closed:

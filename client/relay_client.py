@@ -261,7 +261,14 @@ class RelaySocket:
             raise RelayError("PUT target falló")
         self._enqueue()
         deadline = time.time() + timeout
+        last_target_put = time.time()
         while time.time() < deadline:
+            # keeper: re-publicar el target cada 5s hasta ver ready/error,
+            # porque el bucket expira los objetos (~15s) y el relay podria
+            # no llegar a leerlo si su GET va lento.
+            if time.time() - last_target_put >= 5.0:
+                self.store.put(self.target_key, target)
+                last_target_put = time.time()
             raw = self.store.get(self.status_key)
             if raw:
                 try:
@@ -375,8 +382,15 @@ class RelaySocket:
                     if self.since_ack:
                         self.store.put(ack_key("s2c", self.id), str(self.recv_seq).encode())
                         self.since_ack = 0
+                        self.last_ack_time = time.time()
                     if not self.recv_buf:
                         return b""
+            # keeper: re-publicar el ack s2c cada 5s aunque no haya datos
+            # nuevos, para mantenerlo fresco dentro del TTL del bucket.
+            elif time.time() - self.last_ack_time >= 5.0:
+                self.store.put(ack_key("s2c", self.id), str(self.recv_seq).encode())
+                self.last_ack_time = time.time()
+                self.since_ack = 0
             if deadline is not None and time.time() >= deadline:
                 raise TimeoutError("recv: timeout sin datos")
             time.sleep(self.poll)

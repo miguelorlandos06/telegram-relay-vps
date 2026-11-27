@@ -349,8 +349,35 @@ func handleTCPSession(ctx context.Context, sessionID string, target SessionTarge
 	var lastAct int64
 	atomic.StoreInt64(&lastAct, time.Now().UnixNano())
 	var lastAck uint64
+	var upSeq atomic.Int64
+	var downSeq atomic.Int64
 	var upWg sync.WaitGroup
+	var keeperWg sync.WaitGroup
 	upWg.Add(1)
+	// keeper: el bucket expira los objetos (~15s TTL). Re-publicar
+	// periódicamente los avisos de control (status ready, ack c2s y fin
+	// s2c) mientras la sesión siga viva, para que un GET lento del par
+	// no pierda un aviso escrito una sola vez.
+	keeperWg.Add(1)
+	go func() {
+		defer keeperWg.Done()
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stopCh:
+				return
+			case <-t.C:
+				publishStatus(sessionID, "ready", "")
+				store.Put(AckKey("c2s", sessionID), EncodeCounter(uint64(downSeq.Load())))
+				if v := upSeq.Load(); v > 0 {
+					store.Put(FinKey("s2c", sessionID), EncodeCounter(uint64(v)))
+				}
+			}
+		}
+	}()
 	go func() {
 		defer upWg.Done()
 		defer setFin()
@@ -360,9 +387,11 @@ func handleTCPSession(ctx context.Context, sessionID string, target SessionTarge
 			select {
 			case <-ctx.Done():
 				store.Put(FinKey("s2c", sessionID), EncodeCounter(seq))
+				upSeq.Store(int64(seq))
 				return
 			case <-stopCh:
 				store.Put(FinKey("s2c", sessionID), EncodeCounter(seq))
+				upSeq.Store(int64(seq))
 				return
 			default:
 			}
@@ -395,6 +424,7 @@ func handleTCPSession(ctx context.Context, sessionID string, target SessionTarge
 			seq++
 			atomic.StoreInt64(&lastAct, time.Now().UnixNano())
 		}
+		upSeq.Store(int64(seq))
 		store.Put(FinKey("s2c", sessionID), EncodeCounter(seq))
 	}()
 
@@ -406,6 +436,7 @@ func handleTCPSession(ctx context.Context, sessionID string, target SessionTarge
 		stop()
 		remote.Close()
 		upWg.Wait()
+		keeperWg.Wait()
 		publishStatus(sessionID, "closed", "")
 		slog.Info("tcp session cerrada", "session", shortID(sessionID), "seq", seq)
 	}()
@@ -435,6 +466,7 @@ func handleTCPSession(ctx context.Context, sessionID string, target SessionTarge
 				store.Delete(DataKey("c2s", sessionID, seq))
 			}
 			seq++
+			downSeq.Store(int64(seq))
 			sinceAck++
 			atomic.StoreInt64(&lastAct, time.Now().UnixNano())
 			if sinceAck >= settings.AckEvery || time.Since(lastAckTime) > 5*time.Second {
