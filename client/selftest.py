@@ -83,11 +83,11 @@ def main():
     result = {"ok": False, "connect_ms": None, "tls_hs_ms": None,
               "getme": False, "http_status": None, "error": None}
 
+    store = RelayStore(base, secret, http_timeout=30.0)
     sock = None
     try:
         # 1) sesión por el túnel hasta api.telegram.org:443
         t0 = time.time()
-        store = RelayStore(base, secret, http_timeout=30.0)
         sock = RelaySocket(store, chunk_size=131072, window=32, ack_every=8)
         sock.connect("api.telegram.org", 443, timeout=30.0)
         result["connect_ms"] = round((time.time() - t0) * 1000)
@@ -174,6 +174,16 @@ def main():
 
     print(json.dumps({k: v for k, v in result.items() if k != "ok"} | {"ok": result["ok"]},
                      ensure_ascii=False, indent=None))
+
+    # Publicar el resultado en el bucket (sobre firmado; legible por quien
+    # tenga el secreto) para poder verificarlo desde fuera del runner.
+    try:
+        result_obj = dict(result)
+        result_obj["ts"] = round(time.time())
+        result_obj["iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        store.put("_v2_selftest_result.json", json.dumps(result_obj, ensure_ascii=False).encode())
+    except Exception as e:  # noqa: BLE001
+        print(f"(escribir resultado al bucket falló: {e})")
 
     if result["ok"]:
         msg = (f"Telegram Relay — SELFTEST E2E OK desde el runner: sesion relay {result['connect_ms']} ms, "
