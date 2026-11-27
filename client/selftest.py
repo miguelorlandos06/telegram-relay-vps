@@ -101,13 +101,19 @@ def main():
     result = {"ok": False, "connect_ms": None, "tls_hs_ms": None,
               "getme": False, "http_status": None, "error": None}
 
-    store = RelayStore(base, secret, http_timeout=30.0)
+    store = RelayStore(base, secret, http_timeout=15.0, retries=2)
     sock = None
     dbg("inicio", store)
-    try:
+    for intento in range(2):
+      try:
+        result["error"] = None
+        result["connect_ms"] = None
+        result["tls_hs_ms"] = None
         # 1) sesión por el túnel hasta api.telegram.org:443
+        # (polling suave: el MinIO limita peticiones por IP)
         t0 = time.time()
-        sock = RelaySocket(store, chunk_size=131072, window=32, ack_every=8)
+        sock = RelaySocket(store, chunk_size=131072, window=32, ack_every=8,
+                           poll_interval=0.05, control_poll_interval=0.3)
         sock.connect("api.telegram.org", 443, timeout=30.0)
         result["connect_ms"] = round((time.time() - t0) * 1000)
         print(f"[1/3] sesión relay ready ({result['connect_ms']} ms) id={sock.id}", flush=True)
@@ -184,16 +190,21 @@ def main():
             raise RelayError(f"getMe falló (HTTP {result['http_status']})")
         result["ok"] = True
         result["total_ms"] = round((time.time() - t_total0) * 1000)
-    except Exception as e:  # noqa: BLE001
+      except Exception as e:  # noqa: BLE001
         result["error"] = f"{type(e).__name__}: {e}"
-        print(f"[FALLO] {result['error']}", flush=True)
-        dbg("fallo", store, {"error": result["error"][:200]})
-    finally:
+        print(f"[FALLO intento {intento+1}/2] {result['error']}", flush=True)
+        dbg("fallo", store, {"error": result["error"][:200], "intento": intento + 1})
+        if intento == 0:
+          print("Reintentando la sesion completa con id nuevo...", flush=True)
+          dbg("reintento", store)
+          continue
+      finally:
         if sock is not None:
             try:
                 sock.close()
             except Exception:  # noqa: BLE001
                 pass
+      break
 
     print(json.dumps({k: v for k, v in result.items() if k != "ok"} | {"ok": result["ok"]},
                      ensure_ascii=False, indent=None))

@@ -76,7 +76,7 @@ jobs:
           HTTP_RETRIES: "3"
           HTTP_TIMEOUT: "30"
           CONNECT_TIMEOUT: "30"
-          QUEUE_POLL_INTERVAL: "0.1"
+          QUEUE_POLL_INTERVAL: "0.5"
           MAX_SESSIONS: "64"
           UDP_BATCH_COUNT: "256"
           UDP_BATCH_DELAY_MS: "0"
