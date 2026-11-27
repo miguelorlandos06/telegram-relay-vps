@@ -18,14 +18,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Notificar inicio a Telegram
+        shell: bash
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_GROUP_ID: ${{ secrets.TG_GROUP_ID }}
+        run: |
+          curl -fsS -m 30 -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\": \"${TG_GROUP_ID}\", \"text\": \"relay-server: iniciando en GitHub Actions (run ${GITHUB_RUN_NUMBER}). El selftest E2E (api.telegram.org:443 por el tunel + getMe) correra en breves y notificara el resultado.\"}" >/dev/null || echo "(aviso fallido, se continua)"
+
       - name: Cancelar run anterior si está corriendo
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           echo "Buscando runs en progreso..."
           CURRENT_RUN_ID=${{ github.run_id }}
-          RUNS=$(gh run list --repo "$REPO" --workflow "relay-server" --status in_progress --json databaseId -q '.[].databaseId')
+          RUNS=$(gh run list --repo "$REPO" --workflow "relay-server" --status in_progress --json databaseId -q '.[].databaseId' || true)
           for RUN_ID in $RUNS; do
             if [ "$RUN_ID" != "$CURRENT_RUN_ID" ]; then
               echo "Cancelando run anterior: $RUN_ID"
@@ -39,16 +50,20 @@ jobs:
           go-version: '1.22'
           cache: true
 
+      - name: Setup Python (selftest)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Compilar relay
         run: go build -o telegram_relay_vps .
 
-      - name: Ejecutar relay
+      - name: Ejecutar relay + selftest E2E
         env:
           PROXY_SHARED_SECRET: ${{ secrets.PROXY_SHARED_SECRET }}
           RELAY_BASE_URL: ${{ secrets.RELAY_BASE_URL }}
-          ALLOWLIST: ${{ secrets.ALLOWLIST }}
           ALLOWLIST_DEFAULT: telegram
-          LOG_LEVEL: warn
+          LOG_LEVEL: info
           POLL_INTERVAL: "0.03"
           CHUNK_SIZE: "2097152"
           WINDOW_SIZE: "64"
@@ -65,9 +80,17 @@ jobs:
           UDP_POLL_INTERVAL: "0.02"
           UDP_UPLOAD_WORKERS: "8"
           RELAY_DELETE_AFTER_READ: "true"
-
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_GROUP_ID: ${{ secrets.TG_GROUP_ID }}
         run: |
-          timeout 16200 ./telegram_relay_vps || true
+          python3 -m pip install --quiet cryptography
+          timeout 16200 ./telegram_relay_vps &
+          RELAY_PID=$!
+          sleep 10
+          echo "=== SELFTEST E2E: api.telegram.org:443 por el túnel + getMe ==="
+          python3 client/selftest.py || echo "SELFTEST_FALLO (el relay continúa)"
+          echo "=== el relay sigue corriendo (primer plano) ==="
+          wait "$RELAY_PID" || true
 
       - name: Esperar y relanzar
         if: always()
